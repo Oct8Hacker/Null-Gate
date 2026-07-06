@@ -18,7 +18,7 @@ void Trie::insert(std::string &word) {
 }
 bool Trie::search(std::string &word) {
     int v = 0;
-    reverse(word.begin(), word.end());
+    std::reverse(word.begin(), word.end());
     for(char c: word){
         int index = charToIndex(c);
         if(index == -1)return false;
@@ -36,4 +36,25 @@ int Trie::charToIndex(char &c) {
     if (c == '-') return 36;                               // 36
     if (c == '.') return 37;
     return -1;
+}
+bool Trie::loadFromFile(const std::string &filepath){
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[-] Error: Failed to open blocklist file path: " << filepath << std::endl;
+        return false;
+    }
+    std::string line;
+    int count = 0;
+    while(std::getline(file, line)){
+        if(line.empty() || line[0] == '#')continue;
+        std::istringstream iss(line);
+        std::string ip, domain;
+        iss>>ip>>domain;
+        if(ip == "0.0.0.0" || ip == "127.0.0.1"){
+            insert(domain);
+            ++count;
+        }
+    }
+    std::cout << "[+] Ingested " << count << " rules into memory-mapped array tree blocks." << std::endl;
+    return true;
 }

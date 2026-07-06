@@ -2,8 +2,10 @@
 #include "necessary.hpp"
 #include <sys/epoll.h>
 #include <netinet/in.h>
+#include "radix_tree.hpp"
 class DNSServer{
     private: 
+        Trie _blocklist;
         int _port;
         int _server_fd;
         int _epoll_fd;
@@ -17,4 +19,6 @@ class DNSServer{
         ~DNSServer();
         bool start();
         void stop();
+        int buildSinkholeResponse(const char* query_buffer, int query_len, char* response_buffer);
+        int forwardToUpstream(const char* query_buffer, int query_len, char* response_buffer);
 };

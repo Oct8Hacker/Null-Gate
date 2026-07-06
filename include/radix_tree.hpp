@@ -2,6 +2,8 @@
 #include "necessary.hpp"
 #include <memory>
 #include <array>
+#include <fstream>
+#include <sstream>
 struct Vertex{
     int next[38];
     bool output = false;
@@ -17,4 +19,5 @@ public:
     }
     void insert(std::string &word); 
     bool search(std::string &word);
+    bool loadFromFile(const std::string &filepath);
 };
