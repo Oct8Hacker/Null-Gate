@@ -3,6 +3,7 @@
 #include <sys/epoll.h>
 #include <netinet/in.h>
 #include "radix_tree.hpp"
+#include "cache.hpp"
 class DNSServer{
     private: 
         Trie _blocklist;
@@ -10,6 +11,7 @@ class DNSServer{
         int _server_fd;
         int _epoll_fd;
         bool _running;
+        LRUCache _cache;
         static constexpr int MAX_EVENTS = 64;
         epoll_event _events[MAX_EVENTS];
         bool initSocket();

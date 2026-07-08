@@ -2,7 +2,7 @@
 #include "dns_parser.hpp"
 #include <sys/time.h>
 #include <arpa/inet.h>
-DNSServer::DNSServer(int port) : _port(port), _server_fd(-1), _epoll_fd(-1), _running(false) {}
+DNSServer::DNSServer(int port) : _port(port), _server_fd(-1), _epoll_fd(-1), _running(false), _cache(1e4) {}
 DNSServer::~DNSServer(){ stop(); }
 bool DNSServer::initSocket(){
     _server_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -17,15 +17,29 @@ bool DNSServer::initSocket(){
         std::cerr << "[-] Error: Failed to set non-blocking flag." << std::endl;
         return false;
     }
+    int opt = 1;
+    // setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
+    setsockopt(_server_fd,
+           SOL_SOCKET,
+           SO_REUSEADDR,
+           &opt,
+           sizeof(opt));
+
+    setsockopt(_server_fd,
+            SOL_SOCKET,
+            SO_REUSEPORT,
+            &opt,
+            sizeof(opt));
     // initialise the struct for that port
     sockaddr_in addr{};
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     addr.sin_port = htons(_port);
     // here you bind the socket to the port
     if (bind(_server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "[-] Error: Failed to bind to port " << _port << std::endl;
+        // std::cerr << "[-] Error: Failed to bind to port " << _port << std::endl;
+        perror("bind");
         return false;
     }
     std::cout << "[+] Socket bound successfully to port " << _port << std::endl;
@@ -138,11 +152,11 @@ bool DNSServer::start(){
 
 
     // change this when doing final testing
-    // _blocklist.loadFromFile("../data/blocklist.txt");
-    std::string temp = "netflix.com";
+    _blocklist.loadFromFile("data/blocklist.txt");
+    // std::string temp = "netflix.com";
 
 
-    _blocklist.insert(temp);
+    // _blocklist.insert(temp);
     while(_running) {
         int num_events = epoll_wait(_epoll_fd, _events, MAX_EVENTS, -1);
         if (num_events < 0) {
@@ -181,23 +195,37 @@ bool DNSServer::start(){
                         sendto(_server_fd, response_buffer, response_len, 0, 
                             (struct sockaddr*)&client_addr, client_len);
                     }else{
-                        std::cout << "[V] PASS-THROUGH: " << domain << " forwading to Google's DNS Server." << std::endl;
-                        /* 
+                        /*
+                        * so i will store the entire dns query by google in the cache resposne makes sense saves time*
                         * now what if this is a valid packet i cant just allow this packet to pass through 
                         * this packet needs to be handled by me so that it reaches the appropriate dns server for resolving
                         * or better i could just make a LRU cache and give it to him, but i cant allow the server to talk to 
                         * the dns server on the same port it needs to be done by a different port * 
                         */
-                        char response_buffer[4096];
-                        int response_len = forwardToUpstream(buffer, bytes_read, response_buffer);
-                        if(response_len > 0){
-                            // client --> My DNS Server(dalal) --> Google's DNS server 
-                            int sent = sendto(_server_fd, response_buffer, response_len, 0, (struct sockaddr*)&client_addr, client_len);
-                            if (sent < 0) {
-                                std::cerr << "[-] Error sending upstream response to client." << std::endl;
+                        std::vector<char>cached_response;
+                        int cached_query_size = 0;
+                        if(_cache.get(domain, cached_response, cached_query_size)){
+                            std::cout << "[*] CACHE HIT: "; 
+                            for(int i = domain.size() - 1;i>=0;i--){
+                                std::cout<<domain[i];
                             }
+                            std::cout<<" served from RAM." << std::endl;
+                            DNSHeader* cached_header = reinterpret_cast<DNSHeader*>(cached_response.data());
+                            DNSHeader* client_header = reinterpret_cast<DNSHeader*>(buffer);
+                            cached_header->id = client_header->id; 
+                            sendto(_server_fd, cached_response.data(), cached_response.size(), 0, 
+                            (struct sockaddr*)&client_addr, client_len);
                         }else{
-                            std::cerr << "[-] Upstream timeout or network failure for " << domain << std::endl;
+                            std::cout << "[!] CACHE MISS: ";
+                            for(int i = domain.size() - 1;i>=0;i--){
+                                std::cout<<domain[i];
+                            }
+                            std::cout<< " forwarding to 8.8.8.8..." << std::endl;
+                            char response_buffer[4096];
+                            int response_len = forwardToUpstream(buffer, bytes_read, response_buffer);
+                            sendto(_server_fd, response_buffer, response_len, 0, 
+                                (struct sockaddr*)&client_addr, client_len);
+                            _cache.put(domain, response_buffer, response_len, bytes_read, 300);
                         }
                     }
                 }

@@ -1,0 +1,4 @@
+0.0.0.0 netflix.com
+0.0.0.0 telemetry.microsoft.com
+0.0.0.0 ads.google.com
+0.0.0.0 tracking.epicgames.com
