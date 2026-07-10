@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include "radix_tree.hpp"
 #include "cache.hpp"
+#include <atomic>
 class DNSServer{
     private: 
         Trie _blocklist;
@@ -14,6 +15,8 @@ class DNSServer{
         LRUCache _cache;
         static constexpr int MAX_EVENTS = 64;
         epoll_event _events[MAX_EVENTS];
+        static constexpr int MAX_CONCURRENT_THREADS = 500;
+        std::atomic<int> _active_threads{0};
         bool initSocket();
         bool initEpoll();
     public:

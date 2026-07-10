@@ -118,7 +118,7 @@ int DNSServer::forwardToUpstream(const char* query_buffer, int query_len, char* 
     upstream_addr.sin_family = AF_INET;
     upstream_addr.sin_port = htons(53);
 
-    if (inet_pton(AF_INET, "8.8.8.8", &upstream_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, "1.1.1.1", &upstream_addr.sin_addr) <= 0) {
         close(burner_socket);
         return -1;
     }
@@ -129,10 +129,10 @@ int DNSServer::forwardToUpstream(const char* query_buffer, int query_len, char* 
         return -1;
     }
     socklen_t upstream_len = sizeof(upstream_addr);
-    int bytes_received = recvfrom(burner_socket, response_buffer, 4096, 0, (struct sockaddr*)&upstream_addr, &upstream_len);
-    std::cout << "[DEBUG] Upstream returned "
-          << bytes_received
-          << " bytes\n";
+    int bytes_received = recvfrom(burner_socket, response_buffer, 65536, 0, (struct sockaddr*)&upstream_addr, &upstream_len);
+    // std::cout << "[DEBUG] Upstream returned "
+    //       << bytes_received
+    //       << " bytes\n";
     close(burner_socket);
     return bytes_received;
 }
@@ -142,7 +142,7 @@ bool DNSServer::start(){
     }
     _running = true;
     std::cout << "[+] DNS Server running. Waiting for events..." << std::endl;
-    char buffer[4096];
+    char buffer[65536];
     sockaddr_in client_addr{};
     socklen_t client_len = sizeof(client_addr);
     _blocklist.loadFromFile("data/blocklist.txt");
@@ -167,13 +167,13 @@ bool DNSServer::start(){
                         std::cerr << "[-] Error reading data from socket." << std::endl;
                         break;
                     }
-                    std::cout << "[*] Intercepted raw DNS query! Size: " << bytes_read << " bytes." << std::endl;
+                    //std::cout << "[*] Intercepted raw DNS query! Size: " << bytes_read << " bytes." << std::endl;
                     DNSHeader* header = reinterpret_cast<DNSHeader*>(buffer);
                     int offset = sizeof(DNSHeader);
                     std::string domain = DNSParser::extractDomainName(buffer, offset);
                     uint8_t* ubuffer = reinterpret_cast<uint8_t*>(buffer);
                     uint16_t q_type = (ubuffer[offset] << 8) | (ubuffer[offset + 1]); 
-                    std::cout << "TYPE = " << q_type << '\n';
+                    // std::cout << "TYPE = " << q_type << '\n';
                     int question_len = offset + 4;
                     if(_blocklist.search(domain)){
                         std::cout << "[X] INTERCEPTED: ";
@@ -181,7 +181,7 @@ bool DNSServer::start(){
                             std::cout<<domain[i];
                         }
                         std::cout << " resolved through sinkhole matrix." << std::endl;
-                        char response_buffer[4096];
+                        char response_buffer[65536];
                         int response_len = buildSinkholeResponse(buffer, question_len, response_buffer, q_type);
                         
                         sendto(_server_fd, response_buffer, response_len, 0, 
@@ -207,27 +207,44 @@ bool DNSServer::start(){
                             sendto(_server_fd, cached_response.data(), cached_response.size(), 0, 
                             (struct sockaddr*)&client_addr, client_len);
                         } else {
-                            // std::cout << "[!] CACHE MISS: " << domain << " forwarding to 8.8.8.8..." << std::endl;
+                            // [!] CACHE MISS: We need to ask 8.8.8.8
+                            
+                            // 1. The Semaphore Check (Admission Control)
+                            if (_active_threads.load() >= MAX_CONCURRENT_THREADS) {
+                                std::cerr << "[-] Traffic Spike: Max threads (" << MAX_CONCURRENT_THREADS 
+                                        << ") reached. Dropping query for " << domain << " to prevent crash.\n";
+                                continue; // Instantly skip this packet and go back to epoll_wait
+                            }
+
+                            // 2. Claim the slot
+                            _active_threads++; 
+                            
                             std::string query_str(buffer, bytes_read);
                             
-                            // 2. Spawn a background thread, passing our variables by value so they survive the loop
-                            std::thread([this, query_str, cache_key, client_addr, client_len, bytes_read]() {
-                                char response_buffer[4096];
-                                
-                                // Use the thread's local copy of the query
-                                int response_len = forwardToUpstream(query_str.data(), query_str.size(), response_buffer);
-                                
-                                if (response_len > 0) {
-                                    // UDP sendto is natively thread-safe in the Linux kernel
-                                    sendto(_server_fd, response_buffer, response_len, 0, 
-                                        (struct sockaddr*)&client_addr, client_len);
+                            try {
+                                std::thread([this, query_str, cache_key, client_addr, client_len, bytes_read]() {
+                                    char response_buffer[65536];
                                     
-                                    // Our cache is now thread-safe due to the mutex!
-                                    _cache.put(cache_key, response_buffer, response_len, bytes_read, 300);
-                                } else {
-                                    std::cerr << "[-] Upstream timeout for thread process." << std::endl;
-                                }
-                            }).detach(); // 3. Detach the thread so epoll instantly moves to the next packet
+                                    // Do the heavy lifting over the network
+                                    int response_len = forwardToUpstream(query_str.data(), query_str.size(), response_buffer);
+                                    
+                                    if (response_len > 0) {
+                                        sendto(_server_fd, response_buffer, response_len, 0, 
+                                            (struct sockaddr*)&client_addr, client_len);
+                                        
+                                        _cache.put(cache_key, response_buffer, response_len, bytes_read, 300);
+                                    }
+                                    
+                                    // 3. Release the slot right before the thread dies
+                                    _active_threads--; 
+                                    
+                                }).detach();
+                                
+                            } catch (const std::system_error& e) {
+                                // If the OS still fails for some obscure memory reason, release the slot and survive
+                                _active_threads--;
+                                std::cerr << "[-] System error during thread spawn: " << e.what() << std::endl;
+                            }
                         }
                     }
                 }
